@@ -1,0 +1,83 @@
+metadata_version: "1.0-gold-mart-models"
+
+runtime:
+  app_name: "kappa-gold-model-runner"
+  catalog: "lakehouse"
+  default_engine: "spark_sql"
+  audit_table: "lakehouse.audit.gold_model_metrics"
+  quality_table: "lakehouse.audit.gold_quality_metrics"
+  local_result_dir: "results/gold_models"
+
+connections:
+  trino_default:
+    host: "trino"
+    port: 8080
+    user: "lakehouse"
+    catalog: "lakehouse"
+    schema: "gold"
+    http_scheme: "http"
+
+quality_rule_sets:
+  kpi_common_rules:
+    - {rule_id: KPI_ROW_COUNT_POSITIVE, type: row_count_positive, severity: critical}
+
+models:
+  - name: gold_daily_revenue
+    enabled: true
+    layer: gold
+    engine: spark_sql
+    target: "lakehouse.gold.daily_revenue"
+    write_mode: overwrite
+    partition_by: "order_ds"
+    owner: "data-platform-team"
+    domain: "enterprise-sales"
+    tags: ["gold", "kpi", "revenue"]
+    upstream:
+      - "lakehouse.silver.fact_order"
+    description: "Daily revenue KPI generated from governed order fact."
+    sql: |
+      SELECT
+        order_ds,
+        order_status,
+        COUNT(DISTINCT order_id) AS order_count,
+        SUM(total_amount) AS total_amount,
+        SUM(CASE WHEN is_success_order THEN total_amount ELSE 0 END) AS success_amount,
+        current_timestamp() AS calculated_at
+      FROM lakehouse.silver.fact_order
+      WHERE _meta_is_deleted = false OR _meta_is_deleted IS NULL
+      GROUP BY order_ds, order_status
+    quality:
+      use_rule_sets: ["kpi_common_rules"]
+      rules:
+        - {rule_id: DAILY_REV_DS_NOT_NULL, type: not_null, column: order_ds, severity: critical}
+        - {rule_id: DAILY_REV_AMOUNT_NON_NEGATIVE, type: non_negative, column: total_amount, severity: critical}
+        - {rule_id: DAILY_REV_ORDER_COUNT_NON_NEGATIVE, type: non_negative, column: order_count, severity: critical}
+
+  - name: mart_sales_dashboard
+    enabled: true
+    layer: mart
+    engine: spark_sql
+    target: "lakehouse.mart.sales_dashboard"
+    write_mode: overwrite
+    partition_by: "order_ds"
+    owner: "data-platform-team"
+    domain: "enterprise-sales"
+    tags: ["mart", "dashboard", "sales"]
+    upstream:
+      - "lakehouse.gold.daily_revenue"
+    description: "BI-ready sales dashboard mart."
+    sql: |
+      SELECT
+        order_ds,
+        order_status,
+        order_count,
+        total_amount,
+        success_amount,
+        CASE WHEN total_amount = 0 THEN 0 ELSE success_amount / total_amount END AS success_ratio,
+        calculated_at
+      FROM lakehouse.gold.daily_revenue
+    quality:
+      use_rule_sets: ["kpi_common_rules"]
+      rules:
+        - {rule_id: SALES_DASHBOARD_DS_NOT_NULL, type: not_null, column: order_ds, severity: critical}
+        - {rule_id: SALES_DASHBOARD_SUCCESS_RATIO_RANGE, type: range, column: success_ratio, min: 0, max: 1, severity: warning}

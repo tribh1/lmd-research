@@ -1,0 +1,9 @@
+glossary:
+  - name: Customer
+    description: Individual or organization purchasing goods or services.
+  - name: PII
+    description: Personally identifiable information requiring masking or pseudonymization before analytical consumption.
+  - name: Sales Transaction
+    description: Business event representing an order, order line, or payment.
+  - name: KPI
+    description: Business metric curated in Gold or Data Mart layers.

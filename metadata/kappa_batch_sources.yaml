@@ -1,0 +1,125 @@
+# Batch-as-event configuration for Kappa architecture.
+# Batch snapshot/backfill jobs DO NOT write directly to Raw/Work/Silver.
+# They publish Debezium-compatible snapshot events into the same Kafka topics
+# that the Kappa Spark Structured Streaming pipeline already consumes.
+metadata_version: "1.3-kappa-batch-as-event"
+
+runtime:
+  config_version: "2026.06.30-v1.3"
+  source_system: "postgres"
+  default_snapshot_op: "r"        # Debezium snapshot/read operation
+  default_batch_size: 5000
+  default_poll_timeout: 10
+  batch_run_id_prefix: "batch_snapshot"
+
+connections:
+  source_postgres:
+    type: jdbc
+    driver: postgresql
+    dsn: "postgresql://lakehouse:lakehouse@postgres:5432/source_db"
+  kafka_default:
+    type: kafka
+    bootstrap_servers: "kafka:29092"
+
+batch_sources:
+  - name: customer_initial_snapshot
+    enabled: true
+    flow_name: dim_customer
+    mode: snapshot_to_kafka
+    description: "Initial full snapshot for customer dimension, expressed as Kafka events."
+    source:
+      connection: source_postgres
+      database: source_db
+      schema: public
+      table: src_customer
+      query: |
+        SELECT customer_id, full_name, email, telephone, address, province,
+               customer_segment, created_at, updated_at
+        FROM public.src_customer
+        ORDER BY customer_id
+    event:
+      connection: kafka_default
+      topic: "cdc.public.src_customer"
+      key_columns: ["customer_id"]
+      op: "r"
+      source_table: "src_customer"
+    extraction:
+      batch_size: 5000
+      watermark_column: "updated_at"
+      replay_strategy: "same_event_id_if_same_row_hash"
+
+  - name: product_initial_snapshot
+    enabled: true
+    flow_name: dim_product
+    mode: snapshot_to_kafka
+    description: "Initial full snapshot for product dimension, expressed as Kafka events."
+    source:
+      connection: source_postgres
+      database: source_db
+      schema: public
+      table: src_product
+      query: |
+        SELECT product_id, sku, product_name, category, unit_price, updated_at
+        FROM public.src_product
+        ORDER BY product_id
+    event:
+      connection: kafka_default
+      topic: "cdc.public.src_product"
+      key_columns: ["product_id"]
+      op: "r"
+      source_table: "src_product"
+    extraction:
+      batch_size: 5000
+      watermark_column: "updated_at"
+      replay_strategy: "same_event_id_if_same_row_hash"
+
+  - name: order_initial_snapshot
+    enabled: true
+    flow_name: fact_order
+    mode: snapshot_to_kafka
+    description: "Initial full snapshot for order fact, expressed as Kafka events."
+    source:
+      connection: source_postgres
+      database: source_db
+      schema: public
+      table: src_order
+      query: |
+        SELECT order_id, customer_id, order_date, order_status, total_amount, updated_at
+        FROM public.src_order
+        ORDER BY order_id
+    event:
+      connection: kafka_default
+      topic: "cdc.public.src_order"
+      key_columns: ["order_id"]
+      op: "r"
+      source_table: "src_order"
+    extraction:
+      batch_size: 5000
+      watermark_column: "updated_at"
+      replay_strategy: "same_event_id_if_same_row_hash"
+
+  - name: order_backfill_by_time_window
+    enabled: false
+    flow_name: fact_order
+    mode: backfill_to_kafka
+    description: "Example backfill job. Override --from-ts and --to-ts at runtime."
+    source:
+      connection: source_postgres
+      database: source_db
+      schema: public
+      table: src_order
+      query_template: |
+        SELECT order_id, customer_id, order_date, order_status, total_amount, updated_at
+        FROM public.src_order
+        WHERE updated_at >= %(from_ts)s AND updated_at < %(to_ts)s
+        ORDER BY updated_at, order_id
+    event:
+      connection: kafka_default
+      topic: "cdc.public.src_order"
+      key_columns: ["order_id"]
+      op: "r"
+      source_table: "src_order"
+    extraction:
+      batch_size: 5000
+      watermark_column: "updated_at"
+      replay_strategy: "same_event_id_if_same_row_hash"

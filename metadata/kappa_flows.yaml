@@ -1,0 +1,249 @@
+# Kappa-only, metadata-driven Lakehouse flow registry.
+# Tất cả batch/CDC/stream đều được chuẩn hoá thành event Kafka và xử lý bởi một engine Spark Structured Streaming.
+metadata_version: "1.2-kappa"
+
+runtime:
+  app_name: "kappa-config-driven-lakehouse"
+  catalog: "lakehouse"
+  checkpoint_base: "s3a://warehouse/checkpoints/kappa"
+  default_trigger: "30 seconds"
+  config_version: "2026.06.30-v1.2"
+  source_system: "postgres"
+  audit_namespace: "audit"
+  quarantine_namespace: "quarantine"
+
+connections:
+  kafka_default:
+    bootstrap_servers: "kafka:29092"
+    starting_offsets: "earliest"
+    fail_on_data_loss: false
+
+embedded_metadata:
+  enabled: true
+  prefix: "_meta"
+  include:
+    - event_id
+    - source_system
+    - source_database
+    - source_schema
+    - source_table
+    - source_operation
+    - source_ts_ms
+    - kafka_topic
+    - kafka_partition
+    - kafka_offset
+    - ingest_ts
+    - config_version
+    - pipeline_name
+    - layer
+    - record_hash
+    - schema_hash
+    - dq_errors
+    - pii_tags
+    - lineage
+
+# Chuẩn rule dùng lại nhiều lần, giúp tránh khai báo lặp.
+rule_sets:
+  email_standard_rules:
+    - {column: email, action: trim}
+    - {column: email, action: lower}
+  text_standard_rules:
+    - {column: full_name, action: trim}
+    - {column: province, action: trim}
+    - {column: province, action: upper}
+  money_standard_rules:
+    - {column: total_amount, action: cast, type: "decimal(18,2)"}
+    - {column: amount, action: cast, type: "decimal(18,2)"}
+
+flows:
+  - name: dim_customer
+    enabled: true
+    entity_type: dimension
+    scd_type: 2
+    description: "Customer dimension from Debezium CDC events."
+    owner: "data-platform-team"
+    domain: "enterprise-sales"
+    tags: ["master-data", "pii", "dimension"]
+    source:
+      type: kafka
+      connection: kafka_default
+      topics: ["cdc.public.src_customer"]
+      event_format: debezium
+    target:
+      raw_table: "raw.customer_events"
+      work_table: "work.customer_work"
+      silver_table: "silver.dim_customer"
+      quarantine_table: "quarantine.dim_customer_failed"
+      partition_by: "updated_at"
+      write_mode: merge
+      delete_mode: soft_delete
+    natural_key: ["customer_id"]
+    sequence_column: "updated_at"
+    schema_contract:
+      on_schema_change: add_columns
+      columns:
+        - {name: customer_id, type: long, nullable: false, path: "after.customer_id"}
+        - {name: full_name, type: string, nullable: true, path: "after.full_name", classification: ["PII"]}
+        - {name: email, type: string, nullable: true, path: "after.email", classification: ["PII"]}
+        - {name: telephone, type: string, nullable: true, path: "after.telephone", classification: ["PII"]}
+        - {name: address, type: string, nullable: true, path: "after.address", classification: ["PII"]}
+        - {name: province, type: string, nullable: true, path: "after.province"}
+        - {name: customer_segment, type: string, nullable: true, path: "after.customer_segment"}
+        - {name: created_at, type: timestamp, nullable: true, path: "after.created_at"}
+        - {name: updated_at, type: timestamp, nullable: true, path: "after.updated_at"}
+    standardization:
+      use_rule_sets: ["email_standard_rules", "text_standard_rules"]
+      rules:
+        - {column: customer_segment, action: upper}
+        - {name: customer_segment_norm, action: expr, expr: "upper(customer_segment)"}
+    business_logic:
+      derive_columns:
+        - {name: customer_type, expr: "CASE WHEN customer_segment_norm IN ('VIP','ENTERPRISE') THEN 'HIGH_VALUE' ELSE 'STANDARD' END"}
+    data_quality:
+      on_critical_fail: quarantine
+      rules:
+        - {rule_id: CUST_ID_NOT_NULL, column: customer_id, type: not_null, severity: critical}
+        - {rule_id: CUST_EMAIL_VALID, column: email, type: regex, pattern: "^[^@]+@[^@]+\\.[^@]+$", severity: warning}
+    pii_policy:
+      full_name: {method: sha256}
+      email: {method: email_mask}
+      telephone: {method: phone_mask}
+      address: {method: nullify}
+    surrogate_key:
+      column: customer_sk
+      method: hash64
+      keys: ["customer_id"]
+      scd_type: 2
+      effective_from: "updated_at"
+      effective_to_column: "effective_to"
+      current_flag_column: "is_current"
+
+  - name: dim_product
+    enabled: true
+    entity_type: dimension
+    scd_type: 1
+    description: "Product dimension from CDC events."
+    owner: "data-platform-team"
+    domain: "enterprise-sales"
+    tags: ["reference-data", "dimension"]
+    source:
+      type: kafka
+      connection: kafka_default
+      topics: ["cdc.public.src_product"]
+      event_format: debezium
+    target:
+      raw_table: "raw.product_events"
+      work_table: "work.product_work"
+      silver_table: "silver.dim_product"
+      quarantine_table: "quarantine.dim_product_failed"
+      partition_by: "updated_at"
+      write_mode: merge
+      delete_mode: soft_delete
+    natural_key: ["product_id"]
+    sequence_column: "updated_at"
+    schema_contract:
+      on_schema_change: add_columns
+      columns:
+        - {name: product_id, type: long, nullable: false, path: "after.product_id"}
+        - {name: sku, type: string, nullable: false, path: "after.sku"}
+        - {name: product_name, type: string, nullable: true, path: "after.product_name"}
+        - {name: category, type: string, nullable: true, path: "after.category"}
+        - {name: unit_price, type: "decimal(18,2)", nullable: true, path: "after.unit_price"}
+        - {name: updated_at, type: timestamp, nullable: true, path: "after.updated_at"}
+    standardization:
+      rules:
+        - {column: sku, action: trim}
+        - {column: sku, action: upper}
+        - {column: category, action: trim}
+        - {column: category, action: upper}
+    business_logic:
+      derive_columns:
+        - {name: product_group, expr: "coalesce(category, 'UNKNOWN')"}
+    data_quality:
+      on_critical_fail: quarantine
+      rules:
+        - {rule_id: PROD_ID_NOT_NULL, column: product_id, type: not_null, severity: critical}
+        - {rule_id: PROD_SKU_NOT_NULL, column: sku, type: not_null, severity: critical}
+        - {rule_id: PROD_PRICE_POSITIVE, column: unit_price, type: positive, severity: critical}
+    surrogate_key:
+      column: product_sk
+      method: hash64
+      keys: ["product_id"]
+      scd_type: 1
+
+  - name: fact_order
+    enabled: true
+    entity_type: fact
+    description: "Order fact enriched with dimension surrogate keys."
+    owner: "data-platform-team"
+    domain: "enterprise-sales"
+    tags: ["transaction", "fact", "cdc"]
+    source:
+      type: kafka
+      connection: kafka_default
+      topics: ["cdc.public.src_order"]
+      event_format: debezium
+    target:
+      raw_table: "raw.order_events"
+      work_table: "work.order_work"
+      silver_table: "silver.fact_order"
+      quarantine_table: "quarantine.fact_order_failed"
+      partition_by: "order_date"
+      write_mode: merge
+      delete_mode: soft_delete
+    natural_key: ["order_id"]
+    sequence_column: "updated_at"
+    schema_contract:
+      on_schema_change: add_columns
+      columns:
+        - {name: order_id, type: long, nullable: false, path: "after.order_id"}
+        - {name: customer_id, type: long, nullable: false, path: "after.customer_id"}
+        - {name: order_date, type: timestamp, nullable: true, path: "after.order_date"}
+        - {name: order_status, type: string, nullable: true, path: "after.order_status"}
+        - {name: total_amount, type: "decimal(18,2)", nullable: true, path: "after.total_amount"}
+        - {name: updated_at, type: timestamp, nullable: true, path: "after.updated_at"}
+    standardization:
+      rules:
+        - {column: order_status, action: trim}
+        - {column: order_status, action: upper}
+        - {column: total_amount, action: cast, type: "decimal(18,2)"}
+        - {name: order_ds, action: expr, expr: "to_date(order_date)"}
+    business_logic:
+      derive_columns:
+        - {name: is_success_order, expr: "CASE WHEN order_status IN ('PAID','SHIPPED') THEN true ELSE false END"}
+    data_quality:
+      on_critical_fail: quarantine
+      rules:
+        - {rule_id: ORDER_ID_NOT_NULL, column: order_id, type: not_null, severity: critical}
+        - {rule_id: ORDER_CUSTOMER_NOT_NULL, column: customer_id, type: not_null, severity: critical}
+        - {rule_id: ORDER_AMOUNT_POSITIVE, column: total_amount, type: positive, severity: critical}
+        - {rule_id: ORDER_STATUS_VALID, column: order_status, type: in_set, values: ["CREATED", "PAID", "SHIPPED", "CANCELLED"], severity: critical}
+    surrogate_key:
+      column: order_sk
+      method: hash64
+      keys: ["order_id"]
+      scd_type: none
+    foreign_keys:
+      - name: customer_sk
+        lookup_table: "lakehouse.silver.dim_customer"
+        lookup_key: ["customer_id"]
+        lookup_value: "customer_sk"
+        unknown_value: -1
+
+models:
+  - name: kpi_daily_revenue
+    enabled: true
+    layer: gold
+    trigger: "after_each_micro_batch"
+    write_mode: overwrite
+    upstream: ["silver.fact_order"]
+    sql: |
+      SELECT
+        order_ds,
+        order_status,
+        COUNT(DISTINCT order_id) AS order_count,
+        SUM(total_amount) AS total_amount,
+        SUM(CASE WHEN is_success_order THEN total_amount ELSE 0 END) AS success_amount,
+        current_timestamp() AS calculated_at
+      FROM lakehouse.silver.fact_order
+      GROUP BY order_ds, order_status

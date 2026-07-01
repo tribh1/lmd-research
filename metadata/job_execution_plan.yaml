@@ -1,0 +1,50 @@
+metadata_version: "2.0-strict-layered-job-execution"
+
+architecture_decision:
+  principle: "One physical job per lakehouse layer transition"
+  notes:
+    - "Batch is converted to bounded events and published to the same Kafka topics used by CDC."
+    - "Kafka -> Raw is a dedicated streaming Raw Writer."
+    - "Raw -> Work is a dedicated processor."
+    - "Work -> Silver/Quarantine is a dedicated governance processor."
+    - "Silver -> Gold is executed by the Gold model runner."
+    - "Gold -> Data Mart is executed by the Mart model runner."
+    - "OpenMetadata sync, reconciliation, experiments, and dashboard are separate operational jobs."
+
+execution_profiles:
+  strict_layered:
+    description: "Recommended v7 execution profile. No job crosses more than one lakehouse layer boundary."
+    jobs:
+      - name: batch_as_event_publisher
+        layer_transition: "source_snapshot -> kafka"
+        command: "./scripts/run_kappa_batch_publish.sh"
+      - name: kappa_raw_writer_stream
+        layer_transition: "kafka -> raw"
+        command: "MODE=stream-raw-only ./scripts/run_kappa_config.sh"
+      - name: kappa_raw_to_work_once
+        layer_transition: "raw -> work"
+        command: "./scripts/run_kappa_raw_to_work.sh"
+      - name: kappa_work_to_silver_once
+        layer_transition: "work -> silver/quarantine"
+        command: "./scripts/run_kappa_work_to_silver.sh"
+      - name: reconcile_unknown_fk
+        layer_transition: "silver -> silver_reconciled"
+        command: "./scripts/run_reconcile_unknown_fk.sh"
+      - name: gold_runner
+        layer_transition: "silver -> gold"
+        command: "LAYERS=gold ./scripts/run_gold_models.sh"
+      - name: mart_runner
+        layer_transition: "gold -> mart"
+        command: "LAYERS=mart ./scripts/run_mart_models.sh"
+      - name: openmetadata_sync
+        layer_transition: "metadata_config -> openmetadata"
+        command: "PRINT_SUMMARY=true ./scripts/sync_openmetadata.sh"
+      - name: dashboard_builder
+        layer_transition: "audit_metrics -> dashboard"
+        command: "./scripts/run_build_dashboard.sh"
+
+deprecated_profiles:
+  prototype_unified:
+    reason: "Kept only for backward compatibility in older scripts. v7 strict design does not use it."
+  production_layered_v6:
+    reason: "Raw -> Work -> Silver was still grouped. Replaced by strict_layered."

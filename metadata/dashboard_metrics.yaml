@@ -1,0 +1,31 @@
+metadata_version: "1.0-dashboard-metrics"
+
+runtime:
+  output_dir: "results/dashboard"
+  experiment_results: "results/experiment_results.json"
+  gold_model_results: "results/gold_models/gold_model_results.json"
+  reconciliation_results: "results/reconciliation_results.json"
+  openmetadata_events_dir: "results/openmetadata_events"
+
+sections:
+  - name: "Pipeline Coverage"
+    metrics:
+      - "metadata_coverage_rate"
+      - "governance_coverage_rate"
+      - "lineage_edge_count"
+  - name: "Kappa Processing"
+    metrics:
+      - "batch_event_publish_throughput"
+      - "streaming_throughput_rows_per_second"
+      - "snapshot_to_silver_latency_seconds"
+  - name: "Governance"
+    metrics:
+      - "dq_failed_rows"
+      - "quarantine_rows"
+      - "pii_masked_columns"
+      - "unknown_fk_rate"
+  - name: "Serving"
+    metrics:
+      - "query_latency_seconds"
+      - "gold_model_rows"
+      - "gold_quality_failed_rules"

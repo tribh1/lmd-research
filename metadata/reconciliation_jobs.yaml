@@ -1,0 +1,25 @@
+metadata_version: "1.0-reconciliation"
+
+runtime:
+  app_name: "kappa-reconcile-unknown-fk"
+  catalog: "lakehouse"
+  audit_table: "lakehouse.audit.reconciliation_metrics"
+
+jobs:
+  - name: reconcile_fact_order_customer_sk
+    enabled: true
+    flow_name: fact_order
+    fact_table: "lakehouse.silver.fact_order"
+    fact_key: ["order_sk"]
+    unknown_fk_column: "customer_sk"
+    unknown_value: -1
+    lookup_table: "lakehouse.silver.dim_customer"
+    lookup_keys:
+      - {fact_column: "customer_id", lookup_column: "customer_id"}
+    lookup_value: "customer_sk"
+    current_filter: "is_current = true"
+    update_columns:
+      - "customer_sk"
+    audit_columns:
+      reconciled_at_column: "_meta_reconciled_at"
+      reconciled_by_column: "_meta_reconciled_by"

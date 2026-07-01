@@ -1,0 +1,18 @@
+{
+  "name": "postgres-source-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres-source",
+    "database.port": "5432",
+    "database.user": "lakehouse",
+    "database.password": "lakehouse",
+    "database.dbname": "source_db",
+    "database.server.name": "pgsource",
+    "plugin.name": "pgoutput",
+    "slot.name": "lakehouse_slot",
+    "publication.autocreate.mode": "filtered",
+    "table.include.list": "public.src_customer,public.src_order,public.src_order_item,public.src_payment",
+    "topic.prefix": "pgsource",
+    "tombstones.on.delete": "false"
+  }
+}

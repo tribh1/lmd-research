@@ -1,0 +1,286 @@
+# Metadata-driven pipeline registry.
+# Chỉ cần thêm/sửa cấu hình bảng tại file này, generic runner sẽ tự động đọc metadata
+# và chạy Raw -> Work -> Silver, sau đó chạy các model Gold/Mart nếu được bật.
+metadata_version: "1.0"
+
+environment:
+  connections:
+    source_postgres:
+      type: jdbc
+      url: "jdbc:postgresql://postgres-source:5432/source_db"
+      user: "lakehouse"
+      password: "lakehouse"
+      driver: "org.postgresql.Driver"
+    kafka_default:
+      type: kafka
+      bootstrap_servers: "kafka:29092"
+  lakehouse:
+    catalog: "lakehouse"
+    audit_namespace: "audit"
+    quarantine_namespace: "quarantine"
+  openmetadata:
+    url: "http://openmetadata:8585/api"
+    enabled: false
+
+pipeline:
+  default_stage_sequence: ["raw", "work", "silver"]
+  on_error: "continue"          # continue | fail_fast
+  emit_lineage: true
+  emit_quality_results: true
+  write_audit_metrics: true
+  default_write_mode: "append"  # append | overwrite | merge
+  default_source_system: "postgres"
+
+# Mỗi item trong tables là một data product/table pipeline độc lập.
+# Thêm bảng mới = thêm một block cấu hình, không phải viết thêm Spark job.
+tables:
+  - name: customers
+    enabled: true
+    domain: "enterprise-sales"
+    owner: "data-platform-team"
+    description: "Customer master data with PII masking and data quality checks."
+    glossary_terms: ["Customer", "PII", "Master Data"]
+    tags: ["master-data", "pii"]
+    source:
+      type: jdbc
+      connection: source_postgres
+      table: "public.src_customer"
+      load_strategy: full        # full | incremental
+    target:
+      table_name: "customers"
+      partition_by: "created_at"
+      write_mode: append
+    primary_key: ["customer_id"]
+    watermark_column: "updated_at"
+    schema_contract:
+      on_schema_change: add_columns  # fail | add_columns | permissive
+      columns:
+        - {name: customer_id, type: long, nullable: false, description: "Natural customer id from source"}
+        - {name: full_name, type: string, nullable: true, classification: ["PII"]}
+        - {name: email, type: string, nullable: true, classification: ["PII"]}
+        - {name: telephone, type: string, nullable: true, classification: ["PII"]}
+        - {name: address, type: string, nullable: true, classification: ["PII"]}
+        - {name: province, type: string, nullable: true}
+        - {name: customer_segment, type: string, nullable: true}
+        - {name: created_at, type: timestamp, nullable: true}
+        - {name: updated_at, type: timestamp, nullable: true}
+    transformations:
+      work:
+        cast_to_schema: true
+        derive_columns:
+          - {name: customer_segment_norm, expr: "upper(customer_segment)"}
+      silver:
+        deduplicate: {keys: ["customer_id"], order_by: "updated_at"}
+        select_columns: ["customer_id", "full_name", "email", "telephone", "address", "province", "customer_segment", "customer_segment_norm", "created_at", "updated_at"]
+    governance:
+      pii_columns:
+        full_name: {method: sha256}
+        email: {method: email_mask}
+        telephone: {method: phone_mask}
+        address: {method: nullify}
+      dq_rules:
+        - {rule_id: CUST_EMAIL_NOT_NULL, column: email, type: not_null, severity: critical}
+        - {rule_id: CUST_EMAIL_VALID, column: email, type: regex, pattern: "^[^@]+@[^@]+\\.[^@]+$", severity: critical}
+        - {rule_id: CUST_ID_UNIQUE, columns: [customer_id], type: unique, severity: critical}
+        - {rule_id: CUST_UPDATED_FRESH, column: updated_at, type: freshness_hours, threshold: 8760, severity: warning}
+
+  - name: products
+    enabled: true
+    domain: "enterprise-sales"
+    owner: "data-platform-team"
+    description: "Product reference data."
+    glossary_terms: ["Product", "Reference Data"]
+    tags: ["reference-data"]
+    source:
+      type: jdbc
+      connection: source_postgres
+      table: "public.src_product"
+      load_strategy: full
+    target:
+      table_name: "products"
+      partition_by: "updated_at"
+      write_mode: append
+    primary_key: ["product_id"]
+    watermark_column: "updated_at"
+    schema_contract:
+      on_schema_change: add_columns
+      columns:
+        - {name: product_id, type: long, nullable: false}
+        - {name: sku, type: string, nullable: false}
+        - {name: product_name, type: string, nullable: true}
+        - {name: category, type: string, nullable: true}
+        - {name: unit_price, type: "decimal(18,2)", nullable: true}
+        - {name: updated_at, type: timestamp, nullable: true}
+    transformations:
+      work: {cast_to_schema: true}
+      silver:
+        deduplicate: {keys: ["product_id"], order_by: "updated_at"}
+    governance:
+      dq_rules:
+        - {rule_id: PROD_SKU_NOT_NULL, column: sku, type: not_null, severity: critical}
+        - {rule_id: PROD_PRICE_POSITIVE, column: unit_price, type: positive, severity: critical}
+
+  - name: orders
+    enabled: true
+    domain: "enterprise-sales"
+    owner: "data-platform-team"
+    description: "Order header transaction data."
+    glossary_terms: ["Order", "Sales Transaction"]
+    tags: ["transaction", "cdc-ready"]
+    source:
+      type: jdbc
+      connection: source_postgres
+      table: "public.src_order"
+      load_strategy: incremental
+    target:
+      table_name: "orders"
+      partition_by: "order_date"
+      write_mode: merge
+    primary_key: ["order_id"]
+    watermark_column: "updated_at"
+    schema_contract:
+      on_schema_change: add_columns
+      columns:
+        - {name: order_id, type: long, nullable: false}
+        - {name: customer_id, type: long, nullable: false}
+        - {name: order_date, type: timestamp, nullable: true}
+        - {name: order_status, type: string, nullable: true}
+        - {name: total_amount, type: "decimal(18,2)", nullable: true}
+        - {name: updated_at, type: timestamp, nullable: true}
+    transformations:
+      work:
+        cast_to_schema: true
+        derive_columns:
+          - {name: order_ds, expr: "to_date(order_date)"}
+      silver:
+        deduplicate: {keys: ["order_id"], order_by: "updated_at"}
+    governance:
+      dq_rules:
+        - {rule_id: ORDER_CUSTOMER_NOT_NULL, column: customer_id, type: not_null, severity: critical}
+        - {rule_id: ORDER_AMOUNT_POSITIVE, column: total_amount, type: positive, severity: critical}
+        - {rule_id: ORDER_STATUS_VALID, column: order_status, type: in_set, values: ["CREATED", "PAID", "SHIPPED", "CANCELLED"], severity: critical}
+
+  - name: order_items
+    enabled: true
+    domain: "enterprise-sales"
+    owner: "data-platform-team"
+    description: "Order line transaction data."
+    glossary_terms: ["Order Line", "Sales Transaction"]
+    tags: ["transaction"]
+    source:
+      type: jdbc
+      connection: source_postgres
+      table: "public.src_order_item"
+      load_strategy: incremental
+    target:
+      table_name: "order_items"
+      partition_by: "updated_at"
+      write_mode: merge
+    primary_key: ["order_item_id"]
+    watermark_column: "updated_at"
+    schema_contract:
+      on_schema_change: add_columns
+      columns:
+        - {name: order_item_id, type: long, nullable: false}
+        - {name: order_id, type: long, nullable: false}
+        - {name: product_id, type: long, nullable: false}
+        - {name: quantity, type: int, nullable: true}
+        - {name: unit_price, type: "decimal(18,2)", nullable: true}
+        - {name: line_amount, type: "decimal(18,2)", nullable: true}
+        - {name: updated_at, type: timestamp, nullable: true}
+    transformations:
+      work: {cast_to_schema: true}
+      silver:
+        deduplicate: {keys: ["order_item_id"], order_by: "updated_at"}
+    governance:
+      dq_rules:
+        - {rule_id: ITEM_QTY_POSITIVE, column: quantity, type: positive, severity: critical}
+        - {rule_id: ITEM_LINE_AMOUNT_POSITIVE, column: line_amount, type: positive, severity: critical}
+
+  - name: payments
+    enabled: true
+    domain: "enterprise-sales"
+    owner: "data-platform-team"
+    description: "Payment transaction data with PCI-like masking."
+    glossary_terms: ["Payment", "PCI"]
+    tags: ["transaction", "sensitive"]
+    source:
+      type: jdbc
+      connection: source_postgres
+      table: "public.src_payment"
+      load_strategy: incremental
+    target:
+      table_name: "payments"
+      partition_by: "paid_at"
+      write_mode: merge
+    primary_key: ["payment_id"]
+    watermark_column: "updated_at"
+    schema_contract:
+      on_schema_change: add_columns
+      columns:
+        - {name: payment_id, type: long, nullable: false}
+        - {name: order_id, type: long, nullable: false}
+        - {name: payment_method, type: string, nullable: true}
+        - {name: card_number, type: string, nullable: true, classification: ["PCI"]}
+        - {name: amount, type: "decimal(18,2)", nullable: true}
+        - {name: paid_at, type: timestamp, nullable: true}
+        - {name: updated_at, type: timestamp, nullable: true}
+    transformations:
+      work: {cast_to_schema: true}
+      silver:
+        deduplicate: {keys: ["payment_id"], order_by: "updated_at"}
+    governance:
+      pii_columns:
+        card_number: {method: last4}
+      dq_rules:
+        - {rule_id: PAYMENT_AMOUNT_POSITIVE, column: amount, type: positive, severity: critical}
+        - {rule_id: CARD_NUMBER_PRESENT, column: card_number, type: not_null, severity: warning}
+
+# SQL model tự động chạy sau khi Silver hoàn tất. Có thể thêm KPI mới bằng cấu hình.
+models:
+  - name: daily_revenue_kpi
+    enabled: true
+    layer: gold
+    write_mode: overwrite
+    upstream: ["silver.orders", "silver.payments"]
+    sql: |
+      SELECT
+        to_date(o.order_date) AS order_ds,
+        o.order_status,
+        COUNT(DISTINCT o.order_id) AS order_count,
+        SUM(o.total_amount) AS order_amount,
+        SUM(CASE WHEN p.payment_id IS NOT NULL THEN p.amount ELSE 0 END) AS paid_amount,
+        current_timestamp() AS calculated_at
+      FROM lakehouse.silver.orders o
+      LEFT JOIN lakehouse.silver.payments p ON o.order_id = p.order_id
+      GROUP BY to_date(o.order_date), o.order_status
+  - name: product_sales_kpi
+    enabled: true
+    layer: gold
+    write_mode: overwrite
+    upstream: ["silver.order_items", "silver.products"]
+    sql: |
+      SELECT
+        p.category,
+        p.product_id,
+        p.product_name,
+        SUM(i.quantity) AS quantity_sold,
+        SUM(i.line_amount) AS sales_amount,
+        current_timestamp() AS calculated_at
+      FROM lakehouse.silver.order_items i
+      INNER JOIN lakehouse.silver.products p ON i.product_id = p.product_id
+      GROUP BY p.category, p.product_id, p.product_name
+  - name: sales_dashboard
+    enabled: true
+    layer: mart
+    write_mode: overwrite
+    upstream: ["gold.daily_revenue_kpi", "gold.product_sales_kpi", "silver.customers"]
+    sql: |
+      SELECT
+        d.order_ds,
+        d.order_status,
+        d.order_count,
+        d.order_amount,
+        d.paid_amount,
+        current_timestamp() AS refreshed_at
+      FROM lakehouse.gold.daily_revenue_kpi d

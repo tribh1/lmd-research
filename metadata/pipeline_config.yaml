@@ -1,0 +1,90 @@
+environment:
+  minio_endpoint: "http://minio:9000"
+  warehouse:
+    raw: "s3a://lakehouse-raw/warehouse"
+    work: "s3a://lakehouse-work/warehouse"
+    silver: "s3a://lakehouse-silver/warehouse"
+    gold: "s3a://lakehouse-gold/warehouse"
+    mart: "s3a://lakehouse-mart/warehouse"
+    audit: "s3a://lakehouse-audit/warehouse"
+    quarantine: "s3a://lakehouse-quarantine/warehouse"
+  jdbc:
+    source_url: "jdbc:postgresql://postgres-source:5432/source_db"
+    user: "lakehouse"
+    password: "lakehouse"
+  kafka:
+    bootstrap_servers: "kafka:29092"
+  openmetadata:
+    url: "http://openmetadata:8585/api"
+
+catalog_defaults:
+  namespace_prefix: "lakehouse"
+  partition_transform: "days"
+  write_format: "parquet"
+  owner: "data-platform-team"
+  domain: "enterprise-sales"
+
+tables:
+  customers:
+    source_table: "public.src_customer"
+    primary_key: ["customer_id"]
+    watermark_column: "updated_at"
+    partition_column: "created_at"
+    pii_columns:
+      full_name: {method: "sha256"}
+      email: {method: "email_mask"}
+      telephone: {method: "phone_mask"}
+      address: {method: "nullify"}
+    dq_rules:
+      - {rule_id: "CUST_EMAIL_NOT_NULL", column: "email", type: "not_null", severity: "critical"}
+      - {rule_id: "CUST_EMAIL_VALID", column: "email", type: "regex", pattern: "^[^@]+@[^@]+\\.[^@]+$", severity: "critical"}
+      - {rule_id: "CUST_ID_UNIQUE", column: "customer_id", type: "unique", severity: "critical"}
+      - {rule_id: "CUST_UPDATED_FRESH", column: "updated_at", type: "freshness_hours", threshold: 8760, severity: "warning"}
+    glossary_terms: ["Customer", "PII", "Master Data"]
+  products:
+    source_table: "public.src_product"
+    primary_key: ["product_id"]
+    watermark_column: "updated_at"
+    partition_column: "updated_at"
+    dq_rules:
+      - {rule_id: "PROD_SKU_NOT_NULL", column: "sku", type: "not_null", severity: "critical"}
+      - {rule_id: "PROD_PRICE_POSITIVE", column: "unit_price", type: "positive", severity: "critical"}
+    glossary_terms: ["Product", "Reference Data"]
+  orders:
+    source_table: "public.src_order"
+    primary_key: ["order_id"]
+    watermark_column: "updated_at"
+    partition_column: "order_date"
+    dq_rules:
+      - {rule_id: "ORDER_CUSTOMER_NOT_NULL", column: "customer_id", type: "not_null", severity: "critical"}
+      - {rule_id: "ORDER_AMOUNT_POSITIVE", column: "total_amount", type: "positive", severity: "critical"}
+      - {rule_id: "ORDER_STATUS_VALID", column: "order_status", type: "in_set", values: ["CREATED", "PAID", "SHIPPED", "CANCELLED"], severity: "critical"}
+    glossary_terms: ["Order", "Sales Transaction"]
+  order_items:
+    source_table: "public.src_order_item"
+    primary_key: ["order_item_id"]
+    watermark_column: "updated_at"
+    partition_column: "updated_at"
+    dq_rules:
+      - {rule_id: "ITEM_QTY_POSITIVE", column: "quantity", type: "positive", severity: "critical"}
+      - {rule_id: "ITEM_LINE_AMOUNT_POSITIVE", column: "line_amount", type: "positive", severity: "critical"}
+    glossary_terms: ["Order Line", "Sales Transaction"]
+  payments:
+    source_table: "public.src_payment"
+    primary_key: ["payment_id"]
+    watermark_column: "updated_at"
+    partition_column: "paid_at"
+    pii_columns:
+      card_number: {method: "last4"}
+    dq_rules:
+      - {rule_id: "PAYMENT_AMOUNT_POSITIVE", column: "amount", type: "positive", severity: "critical"}
+      - {rule_id: "CARD_NUMBER_MASKED", column: "card_number", type: "pii_present", severity: "critical"}
+    glossary_terms: ["Payment", "PCI"]
+
+lineage:
+  gold.daily_revenue_kpi:
+    upstream: ["silver.orders", "silver.payments"]
+  gold.product_sales_kpi:
+    upstream: ["silver.order_items", "silver.products"]
+  mart.sales_dashboard:
+    upstream: ["gold.daily_revenue_kpi", "gold.product_sales_kpi", "silver.customers"]

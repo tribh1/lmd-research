@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Generated data and runtime outputs
+data/generated/
+data/tmp/
+results/**/*.json
+results/**/*.csv
+results/**/*.parquet
+results/**/*.log
+results/dashboard/*.md
+!results/.gitkeep
+!results/**/.gitkeep
+
+# Spark / Hadoop / Iceberg runtime
+spark-warehouse/
+warehouse/
+metastore_db/
+derby.log
+*.snappy.parquet
+*.avro
+
+# Docker local volumes
+volumes/
+.minio/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Archives
+*.zip
+*.tar
+*.tar.gz

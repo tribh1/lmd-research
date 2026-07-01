@@ -1,0 +1,30 @@
+metadata_version: "1.0-openmetadata-integration"
+
+enabled: true
+base_url: "${OPENMETADATA_URL:-http://openmetadata:8585/api/v1}"
+auth_token: "${OPENMETADATA_JWT_TOKEN:-}"
+
+service:
+  database_service_name: "lakehouse_trino"
+  database_service_type: "Trino"
+  messaging_service_name: "lakehouse_kafka"
+  messaging_service_type: "Kafka"
+  pipeline_service_name: "lakehouse_airflow"
+  pipeline_service_type: "Airflow"
+
+defaults:
+  owner: "data-platform-team"
+  domain: "enterprise-sales"
+  database_name: "lakehouse"
+  include_embedded_metadata_columns: true
+  local_fallback_dir: "results/openmetadata_events"
+
+tag_mapping:
+  PII: "PII.Sensitive"
+  master-data: "DataProduct.MasterData"
+  transaction: "DataProduct.Transaction"
+  fact: "Model.Fact"
+  dimension: "Model.Dimension"
+  embedded-metadata: "Governance.EmbeddedMetadata"
+  dq: "Governance.DataQuality"
+  kappa: "Architecture.Kappa"
