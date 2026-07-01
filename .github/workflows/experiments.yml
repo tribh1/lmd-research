@@ -78,51 +78,54 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Create CI environment file
-        run: cp .env.example .env
+        run: |
+          cp .env.example .env
+          mkdir -p results/full_kappa_flow
 
       - name: Start lakehouse services
-        run: docker compose up -d
+        run: |
+          set -o pipefail
+          docker compose -f docker-compose.ci.yml config
+          docker compose -f docker-compose.ci.yml up -d 2>&1 | tee results/full_kappa_flow/compose_up.log
 
       - name: Wait for core services
         run: |
           for i in {1..60}; do
-            docker compose exec -T postgres-source pg_isready -U lakehouse -d source_db && break
+            docker compose -f docker-compose.ci.yml exec -T postgres-source pg_isready -U lakehouse -d source_db && break
             sleep 5
           done
 
           for i in {1..60}; do
-            curl -fsS http://localhost:9000/minio/health/live && break
+            docker compose -f docker-compose.ci.yml exec -T kafka kafka-topics --bootstrap-server localhost:9092 --list && break
             sleep 5
           done
 
-          for i in {1..60}; do
-            curl -fsS http://localhost:8088/v1/info && break
-            sleep 5
-          done
-
-          docker compose ps
+          docker compose -f docker-compose.ci.yml ps
 
       - name: Prepare Python dependencies in Spark container
         run: |
-          docker compose exec -T spark bash -lc \
+          docker compose -f docker-compose.ci.yml exec -T spark bash -lc \
             "cd /opt/lakehouse && python -m pip install --user -r requirements.txt"
 
       - name: Run full Source to Data Mart flow
         run: |
-          docker compose exec -T \
+          docker compose -f docker-compose.ci.yml exec -T \
             -e TRINO_HOST=trino \
             -e TRINO_PORT=8080 \
             -e BATCH_RUN_ID=github_actions_${{ github.run_id }} \
             -e FLOW_RESULTS_DIR=results/full_kappa_flow \
+            -e LAKEHOUSE_CATALOG_TYPE=hadoop \
+            -e LAKEHOUSE_WAREHOUSE=file:///opt/lakehouse/warehouse \
             spark bash -lc "cd /opt/lakehouse && bash scripts/run_full_kappa_flow_experiment.sh"
 
       - name: Upload full-stack experiment results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: full-stack-experiment-results
           path: results/full_kappa_flow/
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Show service logs on failure
         if: failure()
-        run: docker compose logs --tail=200
+        run: docker compose -f docker-compose.ci.yml logs --tail=200

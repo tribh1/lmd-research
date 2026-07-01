@@ -15,21 +15,34 @@ DEFAULT_SPARK_PACKAGES = ",".join(
 
 def build_spark(app_name: str) -> SparkSession:
     packages = os.getenv("SPARK_PACKAGES", DEFAULT_SPARK_PACKAGES)
-    return (
+    catalog = os.getenv("LAKEHOUSE_CATALOG", "lakehouse")
+    catalog_type = os.getenv("LAKEHOUSE_CATALOG_TYPE", "hive")
+    warehouse = os.getenv("LAKEHOUSE_WAREHOUSE", "s3a://lakehouse-raw/warehouse")
+
+    builder = (
         SparkSession.builder
         .appName(app_name)
         .config("spark.jars.packages", packages)
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
-        .config("spark.sql.catalog.lakehouse", "org.apache.iceberg.spark.SparkCatalog")
-        .config("spark.sql.catalog.lakehouse.type", "hive")
-        .config("spark.sql.catalog.lakehouse.uri", "thrift://hive-metastore:9083")
-        .config("spark.sql.catalog.lakehouse.warehouse", "s3a://lakehouse-raw/warehouse")
-        .config("spark.hadoop.fs.s3a.endpoint", "http://minio:9000")
-        .config("spark.hadoop.fs.s3a.access.key", "minioadmin")
-        .config("spark.hadoop.fs.s3a.secret.key", "minioadmin")
-        .config("spark.hadoop.fs.s3a.path.style.access", "true")
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config(f"spark.sql.catalog.{catalog}", "org.apache.iceberg.spark.SparkCatalog")
+        .config(f"spark.sql.catalog.{catalog}.type", catalog_type)
+        .config(f"spark.sql.catalog.{catalog}.warehouse", warehouse)
         .config("spark.sql.shuffle.partitions", "8")
-        .enableHiveSupport()
-        .getOrCreate()
     )
+
+    if catalog_type == "hive":
+        builder = builder.config(
+            f"spark.sql.catalog.{catalog}.uri",
+            os.getenv("LAKEHOUSE_CATALOG_URI", "thrift://hive-metastore:9083"),
+        )
+    if warehouse.startswith("s3a://"):
+        builder = (
+            builder
+            .config("spark.hadoop.fs.s3a.endpoint", os.getenv("MINIO_ENDPOINT", "http://minio:9000"))
+            .config("spark.hadoop.fs.s3a.access.key", os.getenv("AWS_ACCESS_KEY_ID", "minioadmin"))
+            .config("spark.hadoop.fs.s3a.secret.key", os.getenv("AWS_SECRET_ACCESS_KEY", "minioadmin"))
+            .config("spark.hadoop.fs.s3a.path.style.access", "true")
+            .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        )
+
+    return builder.getOrCreate()
