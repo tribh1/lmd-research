@@ -72,51 +72,91 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     if: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_full_stack == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[run-full-stack]')) }}
+    services:
+      postgres-source:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lakehouse
+          POSTGRES_PASSWORD: lakehouse
+          POSTGRES_DB: source_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lakehouse -d source_db"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      kafka:
+        image: bitnami/kafka:3.7
+        env:
+          ALLOW_PLAINTEXT_LISTENER: "yes"
+          KAFKA_CFG_NODE_ID: 0
+          KAFKA_CFG_PROCESS_ROLES: controller,broker
+          KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+          KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+        ports:
+          - 9092:9092
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create CI environment file
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python and Spark dependencies
         run: |
-          cp .env.example .env
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyspark==3.5.1
+
+      - name: Prepare CI configs and source schema
+        run: |
           mkdir -p results/full_kappa_flow
+          python - <<'PY'
+          from pathlib import Path
+          import psycopg2
+          import yaml
 
-      - name: Start lakehouse services
-        run: |
-          set -o pipefail
-          docker compose -f docker-compose.ci.yml config
-          docker compose -f docker-compose.ci.yml up -d 2>&1 | tee results/full_kappa_flow/compose_up.log
+          with psycopg2.connect("postgresql://lakehouse:lakehouse@localhost:5432/source_db") as conn:
+              with conn.cursor() as cur:
+                  cur.execute(Path("sql/01_source_schema.sql").read_text(encoding="utf-8"))
+              conn.commit()
 
-      - name: Wait for core services
-        run: |
-          for i in {1..60}; do
-            docker compose -f docker-compose.ci.yml exec -T postgres-source pg_isready -U lakehouse -d source_db && break
-            sleep 5
-          done
+          out_dir = Path("results/full_kappa_flow")
+          flows = yaml.safe_load(Path("metadata/kappa_flows.yaml").read_text(encoding="utf-8"))
+          flows["connections"]["kafka_default"]["bootstrap_servers"] = "localhost:9092"
+          flows["runtime"]["checkpoint_base"] = "file:///tmp/lakehouse/checkpoints/kappa"
+          (out_dir / "ci_kappa_flows.yaml").write_text(yaml.safe_dump(flows, sort_keys=False), encoding="utf-8")
 
-          for i in {1..60}; do
-            docker compose -f docker-compose.ci.yml exec -T kafka kafka-topics --bootstrap-server localhost:9092 --list && break
-            sleep 5
-          done
-
-          docker compose -f docker-compose.ci.yml ps
-
-      - name: Prepare Python dependencies in Spark container
-        run: |
-          docker compose -f docker-compose.ci.yml exec -T spark bash -lc \
-            "cd /opt/lakehouse && python -m pip install --user -r requirements.txt"
+          batch = yaml.safe_load(Path("metadata/kappa_batch_sources.yaml").read_text(encoding="utf-8"))
+          batch["connections"]["source_postgres"]["dsn"] = "postgresql://lakehouse:lakehouse@localhost:5432/source_db"
+          batch["connections"]["kafka_default"]["bootstrap_servers"] = "localhost:9092"
+          (out_dir / "ci_kappa_batch_sources.yaml").write_text(yaml.safe_dump(batch, sort_keys=False), encoding="utf-8")
+          PY
 
       - name: Run full Source to Data Mart flow
         run: |
-          docker compose -f docker-compose.ci.yml exec -T \
-            -e TRINO_HOST=trino \
-            -e TRINO_PORT=8080 \
-            -e BATCH_RUN_ID=github_actions_${{ github.run_id }} \
-            -e FLOW_RESULTS_DIR=results/full_kappa_flow \
-            -e LAKEHOUSE_CATALOG_TYPE=hadoop \
-            -e LAKEHOUSE_WAREHOUSE=file:///opt/lakehouse/warehouse \
-            spark bash -lc "cd /opt/lakehouse && bash scripts/run_full_kappa_flow_experiment.sh"
+          SOURCE_DSN=postgresql://lakehouse:lakehouse@localhost:5432/source_db \
+          KAPPA_CONFIG=results/full_kappa_flow/ci_kappa_flows.yaml \
+          BATCH_CONFIG=results/full_kappa_flow/ci_kappa_batch_sources.yaml \
+          BATCH_RUN_ID=github_actions_${{ github.run_id }} \
+          FLOW_RESULTS_DIR=results/full_kappa_flow \
+          LAKEHOUSE_CATALOG_TYPE=hadoop \
+          LAKEHOUSE_WAREHOUSE=file://${{ github.workspace }}/warehouse \
+          bash scripts/run_full_kappa_flow_experiment.sh
 
       - name: Upload full-stack experiment results
         if: always()
@@ -128,4 +168,4 @@ jobs:
 
       - name: Show service logs on failure
         if: failure()
-        run: docker compose -f docker-compose.ci.yml logs --tail=200
+        run: docker ps -a

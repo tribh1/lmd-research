@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCALE=${SCALE:-small}
+SOURCE_DSN=${SOURCE_DSN:-postgresql://lakehouse:lakehouse@postgres-source:5432/source_db}
 BATCH_RUN_ID=${BATCH_RUN_ID:-github_actions_full_flow}
 KAPPA_CONFIG=${KAPPA_CONFIG:-metadata/kappa_flows.yaml}
 BATCH_CONFIG=${BATCH_CONFIG:-metadata/kappa_batch_sources.yaml}
@@ -13,7 +14,7 @@ mkdir -p "$FLOW_RESULTS_DIR"
 python scripts/generate_data.py --scale "$SCALE" --out "data/generated/$SCALE"
 python scripts/load_csv_to_postgres.py \
   --input "data/generated/$SCALE" \
-  --dsn postgresql://lakehouse:lakehouse@postgres-source:5432/source_db
+  --dsn "$SOURCE_DSN"
 
 CONFIG="$KAPPA_CONFIG" MODE=summary ./scripts/run_kappa_config.sh \
   > "$FLOW_RESULTS_DIR/00_metadata_summary.json"
