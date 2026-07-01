@@ -71,7 +71,7 @@ jobs:
     name: Full-stack experiment workflow
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_stack == true }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_full_stack == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[run-full-stack]')) }}
 
     steps:
       - name: Checkout repository
@@ -107,27 +107,20 @@ jobs:
           docker compose exec -T spark bash -lc \
             "cd /opt/lakehouse && python -m pip install --user -r requirements.txt"
 
-      - name: Generate and load sample data
-        run: |
-          docker compose exec -T spark bash -lc \
-            "cd /opt/lakehouse && python scripts/generate_data.py --scale small --out data/generated/small"
-          docker compose exec -T spark bash -lc \
-            "cd /opt/lakehouse && python scripts/load_csv_to_postgres.py --input data/generated/small --dsn postgresql://lakehouse:lakehouse@postgres-source:5432/source_db"
-
-      - name: Run experiment workflow
+      - name: Run full Source to Data Mart flow
         run: |
           docker compose exec -T \
             -e TRINO_HOST=trino \
             -e TRINO_PORT=8080 \
-            -e OUTPUT=results/full_stack_experiment_results.json \
-            -e CONTINUE_ON_ERROR=true \
-            spark bash -lc "cd /opt/lakehouse && bash scripts/run_airflow_experiments.sh"
+            -e BATCH_RUN_ID=github_actions_${{ github.run_id }} \
+            -e FLOW_RESULTS_DIR=results/full_kappa_flow \
+            spark bash -lc "cd /opt/lakehouse && bash scripts/run_full_kappa_flow_experiment.sh"
 
       - name: Upload full-stack experiment results
         uses: actions/upload-artifact@v4
         with:
           name: full-stack-experiment-results
-          path: results/full_stack_experiment_results.json
+          path: results/full_kappa_flow/
           if-no-files-found: error
 
       - name: Show service logs on failure

@@ -50,6 +50,7 @@ volumes/
 .idea/
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Archives
 *.zip

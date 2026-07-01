@@ -16,12 +16,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Run Kappa Raw Writer only")
     ap.add_argument("--config", default="metadata/kappa_flows.yaml")
     ap.add_argument("--flows", default="")
+    ap.add_argument("--once", action="store_true", help="Process currently available Kafka offsets and stop")
     args = ap.parse_args()
 
     registry = load_kappa_registry(args.config)
     pipeline = KappaConfigPipeline(registry)
     try:
-        pipeline.start_flows(registry.enabled_flows(parse_csv(args.flows)), raw_only=True)
+        pipeline.start_flows(registry.enabled_flows(parse_csv(args.flows)), raw_only=True, once=args.once)
     finally:
         pipeline.close()
 

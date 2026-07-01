@@ -16,7 +16,7 @@ connections:
   source_postgres:
     type: jdbc
     driver: postgresql
-    dsn: "postgresql://lakehouse:lakehouse@postgres:5432/source_db"
+    dsn: "postgresql://lakehouse:lakehouse@postgres-source:5432/source_db"
   kafka_default:
     type: kafka
     bootstrap_servers: "kafka:29092"

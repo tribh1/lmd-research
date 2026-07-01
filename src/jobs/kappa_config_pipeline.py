@@ -69,23 +69,26 @@ class KappaConfigPipeline:
             return
         self.layer_processor.write_raw(batch_df, flow, batch_id)
 
-    def start_flow(self, flow: KappaFlow, *, raw_only: bool = False):
+    def start_flow(self, flow: KappaFlow, *, raw_only: bool = False, once: bool = False):
         kafka_df = self.read_kafka_stream(flow)
         raw_df = self.build_raw(kafka_df, flow)
         suffix = "raw_only" if raw_only else "full"
         checkpoint = f"{self.registry.runtime.checkpoint_base}/{flow.name}/{suffix}"
         trigger = flow.source.get("trigger", self.registry.runtime.default_trigger)
         process_fn = self.process_raw_only_batch if raw_only else self.process_full_batch
-        return (
+        writer = (
             raw_df.writeStream.foreachBatch(lambda df, bid: process_fn(df, bid, flow))
             .option("checkpointLocation", checkpoint)
-            .trigger(processingTime=trigger)
             .queryName(f"kappa_{suffix}_{flow.name}")
-            .start()
         )
+        if once:
+            writer = writer.trigger(availableNow=True)
+        else:
+            writer = writer.trigger(processingTime=trigger)
+        return writer.start()
 
-    def start_flows(self, flows: Iterable[KappaFlow], *, raw_only: bool = False) -> None:
-        queries = [self.start_flow(flow, raw_only=raw_only) for flow in flows]
+    def start_flows(self, flows: Iterable[KappaFlow], *, raw_only: bool = False, once: bool = False) -> None:
+        queries = [self.start_flow(flow, raw_only=raw_only, once=once) for flow in flows]
         for query in queries:
             query.awaitTermination()
 
