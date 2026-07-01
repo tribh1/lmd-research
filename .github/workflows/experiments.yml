@@ -1,0 +1,135 @@
+name: Lakehouse Experiments
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_full_stack:
+        description: Run Docker-based Spark/Trino experiment workflow
+        required: false
+        default: false
+        type: boolean
+
+env:
+  PYTHON_VERSION: "3.10"
+
+jobs:
+  metadata-experiments:
+    name: Metadata experiment smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall src scripts
+
+      - name: Validate metadata YAML files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          for path in sorted(Path("metadata").glob("*.yaml")):
+              with path.open("r", encoding="utf-8") as f:
+                  yaml.safe_load(f)
+              print(f"validated {path}")
+          PY
+
+      - name: Run metadata discoverability experiment
+        run: |
+          mkdir -p results
+          python -m src.experiments.exp1_metadata_discoverability \
+            --config metadata/pipeline_config.yaml \
+            --out results/exp1_metadata_discoverability.json
+
+      - name: Upload metadata experiment results
+        uses: actions/upload-artifact@v4
+        with:
+          name: metadata-experiment-results
+          path: results/exp1_metadata_discoverability.json
+          if-no-files-found: error
+
+  full-stack-experiments:
+    name: Full-stack experiment workflow
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_stack == true }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create CI environment file
+        run: cp .env.example .env
+
+      - name: Start lakehouse services
+        run: docker compose up -d
+
+      - name: Wait for core services
+        run: |
+          for i in {1..60}; do
+            docker compose exec -T postgres-source pg_isready -U lakehouse -d source_db && break
+            sleep 5
+          done
+
+          for i in {1..60}; do
+            curl -fsS http://localhost:9000/minio/health/live && break
+            sleep 5
+          done
+
+          for i in {1..60}; do
+            curl -fsS http://localhost:8088/v1/info && break
+            sleep 5
+          done
+
+          docker compose ps
+
+      - name: Prepare Python dependencies in Spark container
+        run: |
+          docker compose exec -T spark bash -lc \
+            "cd /opt/lakehouse && python -m pip install --user -r requirements.txt"
+
+      - name: Generate and load sample data
+        run: |
+          docker compose exec -T spark bash -lc \
+            "cd /opt/lakehouse && python scripts/generate_data.py --scale small --out data/generated/small"
+          docker compose exec -T spark bash -lc \
+            "cd /opt/lakehouse && python scripts/load_csv_to_postgres.py --input data/generated/small --dsn postgresql://lakehouse:lakehouse@postgres-source:5432/source_db"
+
+      - name: Run experiment workflow
+        run: |
+          docker compose exec -T \
+            -e TRINO_HOST=trino \
+            -e TRINO_PORT=8080 \
+            -e OUTPUT=results/full_stack_experiment_results.json \
+            -e CONTINUE_ON_ERROR=true \
+            spark bash -lc "cd /opt/lakehouse && bash scripts/run_airflow_experiments.sh"
+
+      - name: Upload full-stack experiment results
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-stack-experiment-results
+          path: results/full_stack_experiment_results.json
+          if-no-files-found: error
+
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose logs --tail=200
