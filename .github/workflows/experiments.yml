@@ -226,6 +226,7 @@ jobs:
 
       - name: Run SCALE=small end-to-end experiments
         run: |
+          set -o pipefail
           docker compose exec -T spark bash -lc \
             "cd /opt/lakehouse && SCALE=small bash scripts/run_all.sh" 2>&1 | tee run_small_log.txt
           mkdir -p results
@@ -235,10 +236,11 @@ jobs:
         if: always()
         run: |
           mkdir -p results/service_logs
-          docker compose ps > results/service_logs/compose_ps.txt || true
-          for s in openmetadata spark trino hive-metastore debezium; do
-            docker logs "$s" 2>&1 | tail -200 > "results/service_logs/${s}.log" || true
+          docker compose ps -a > results/service_logs/compose_ps.txt || true
+          for s in openmetadata openmetadata-migrate spark trino hive-metastore debezium postgres-source kafka minio; do
+            docker compose logs --tail 200 "$s" > "results/service_logs/${s}.log" 2>&1 || true
           done
+          cp run_small_log.txt results/ 2>/dev/null || true
 
       - name: Upload experiment results
         if: always()

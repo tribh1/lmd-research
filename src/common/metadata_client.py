@@ -35,20 +35,24 @@ class MetadataClient:
             self._basic_login()
 
     # ------------------------------------------------------------------ auth
-    def _basic_login(self) -> None:
+    def _basic_login(self, attempts: int = 5, delay_sec: float = 5.0) -> None:
         email = os.getenv("OPENMETADATA_ADMIN_EMAIL", "admin@open-metadata.org")
         password = os.getenv("OPENMETADATA_ADMIN_PASSWORD", "admin")
-        try:
-            r = self.session.post(
-                f"{self.base_url}/v1/users/login",
-                json={"email": email, "password": base64.b64encode(password.encode()).decode()},
-                timeout=10,
-            )
-            if r.ok:
-                self.session.headers.update({"Authorization": f"Bearer {r.json()['accessToken']}"})
-                self._available = True
-        except Exception:
-            self._available = False
+        payload = {"email": email, "password": base64.b64encode(password.encode()).decode()}
+        for attempt in range(1, attempts + 1):
+            try:
+                r = self.session.post(f"{self.base_url}/v1/users/login", json=payload, timeout=10)
+                if r.ok:
+                    self.session.headers.update({"Authorization": f"Bearer {r.json()['accessToken']}"})
+                    self._available = True
+                    return
+                print(f"[metadata] login attempt {attempt}/{attempts} as {email} -> "
+                      f"{r.status_code}: {r.text[:200]}")
+            except Exception as ex:
+                print(f"[metadata] login attempt {attempt}/{attempts} failed: {ex}")
+                self._available = False
+            time.sleep(delay_sec)
+        print("[metadata] all login attempts failed; API calls will be unauthenticated")
 
     def available(self) -> bool:
         if self._available is not None:

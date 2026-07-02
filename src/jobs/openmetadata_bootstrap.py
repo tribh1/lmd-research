@@ -166,6 +166,9 @@ def main() -> None:
                 edges += 1
 
     print({"registered_tables": registered, "lineage_edges": edges, "openmetadata": om_url})
+    if registered == 0:
+        raise SystemExit("Bootstrap registered no tables — check the [metadata] error lines above "
+                         "(authentication or payload rejection).")
 
 
 if __name__ == "__main__":
