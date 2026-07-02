@@ -221,7 +221,8 @@ jobs:
           docker compose exec -T spark bash -lc \
             "cd /opt/lakehouse && python scripts/produce_events.py --bootstrap kafka:29092 --rate 500 --duration 120"
           sleep 90   # let the consumer drain and commit
-          docker compose exec -T spark bash -lc "pkill -f 04_stream_events || true"
+          # [s] bracket keeps the pattern from matching this shell's own cmdline
+          docker compose exec -T spark bash -lc "pkill -f '04_stream_event[s]' || true" || true
 
       - name: Run SCALE=small end-to-end experiments
         run: |
