@@ -80,6 +80,37 @@ Start with these documents:
 6. [`docs/EXPERIMENT_DATA_DESIGN.md`](docs/EXPERIMENT_DATA_DESIGN.md) — experiment dataset and metrics.
 7. [`docs/GITHUB_UPLOAD_GUIDE.md`](docs/GITHUB_UPLOAD_GUIDE.md) — how to publish this repository to GitHub.
 
+## Thesis Chapter 4 experiment workflow
+
+The experiments in thesis Chapter 4 (Tables 4.5–4.9) are driven by the Medallion
+pipeline jobs `src/jobs/01..05` plus the baseline/ablation jobs, **not** by the
+Kappa flow used in the CI smoke test. The end-to-end procedure is:
+
+```bash
+docker compose up -d                     # includes OpenMetadata (http://localhost:8585)
+SCALE=1gb bash scripts/run_all.sh        # bootstrap catalog, load data, run pipelines,
+                                         # baseline, size verification, experiments E1–E5
+```
+
+Key components:
+
+- `src/jobs/openmetadata_bootstrap.py` — registers service, schemas, tables, PII tags,
+  glossary, and design lineage in OpenMetadata (metadata control plane).
+- `src/jobs/baseline_ingest.py` + `scripts/register_baseline_trino.py` — Baseline A:
+  plain partitioned Parquet Data Lake queried through the same Trino engine
+  (`hive.baseline` catalog).
+- `scripts/produce_events.py` + `src/jobs/04_stream_events.py` — 5-minute streaming
+  latency measurement window (Experiment 3).
+- `scripts/run_ablation.sh` — the four ablation configurations of Table 4.3a
+  (`baseline_a`, `iceberg_only`, `full`, `no_work_layer`).
+- `scripts/collect_host_env.py`, `src/jobs/measure_layer_sizes.py` — evidence for
+  Tables 4.3 and 4.4.
+
+Note: the GitHub Actions workflow only runs a metadata smoke test (E1 offline
+fallback) and a Kappa-flow sanity run on a local `hadoop` catalog; its numbers
+are **not** thesis results. Thesis measurements must come from the full
+docker-compose deployment above.
+
 ## Quick start
 
 Copy the example environment file:

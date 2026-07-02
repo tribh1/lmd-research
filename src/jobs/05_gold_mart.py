@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import uuid
 from pyspark.sql import functions as F
+from src.common.audit import record_lineage_event
 from src.common.config import load_config
 from src.common.spark_session import build_spark
 from src.common.metadata_client import MetadataClient
@@ -49,9 +50,16 @@ def main():
         .withColumn("revenue_gap", F.col("gross_revenue") - F.col("paid_amount")))
     create_or_replace(mart, "lakehouse.mart.sales_dashboard")
 
-    om.emit_lineage("lakehouse.silver.orders", "lakehouse.gold.daily_revenue_kpi", "build-daily-revenue", batch_id)
-    om.emit_lineage("lakehouse.silver.payments", "lakehouse.gold.daily_revenue_kpi", "build-daily-revenue", batch_id)
-    om.emit_lineage("lakehouse.gold.daily_revenue_kpi", "lakehouse.mart.sales_dashboard", "build-sales-dashboard", batch_id)
+    edges = [
+        ("lakehouse.silver.orders", "lakehouse.gold.daily_revenue_kpi", "build-daily-revenue"),
+        ("lakehouse.silver.payments", "lakehouse.gold.daily_revenue_kpi", "build-daily-revenue"),
+        ("lakehouse.silver.order_items", "lakehouse.gold.product_sales_kpi", "build-product-sales"),
+        ("lakehouse.silver.products", "lakehouse.gold.product_sales_kpi", "build-product-sales"),
+        ("lakehouse.gold.daily_revenue_kpi", "lakehouse.mart.sales_dashboard", "build-sales-dashboard"),
+    ]
+    for src, dst, job in edges:
+        emitted = om.emit_lineage(src, dst, job, batch_id)
+        record_lineage_event(spark, src, dst, job, batch_id, emitted)
     spark.stop()
 
 if __name__ == "__main__":
