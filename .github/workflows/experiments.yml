@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_mdl_eg:
+        description: Run the full MDL-EG docker-compose stack and SCALE=small experiments (thesis Chapter 4)
+        required: false
+        default: false
+        type: boolean
 
 env:
   PYTHON_VERSION: "3.10"
@@ -169,3 +174,75 @@ jobs:
       - name: Show service logs on failure
         if: failure()
         run: docker ps -a
+
+  mdl-eg-full-stack:
+    name: MDL-EG full stack (thesis Chapter 4, SCALE=small)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_mdl_eg == true) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[run-mdl-eg]')) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af
+          df -h /
+
+      - name: Prepare environment file
+        run: cp .env.example .env
+
+      - name: Build and start the full stack
+        run: |
+          docker compose up -d --build
+          docker compose ps
+
+      - name: Wait for OpenMetadata to become healthy
+        run: |
+          for i in $(seq 1 90); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' openmetadata 2>/dev/null || echo starting)
+            echo "openmetadata: $status (attempt $i)"
+            [ "$status" = "healthy" ] && exit 0
+            sleep 10
+          done
+          echo "OpenMetadata did not become healthy in time"
+          docker compose ps
+          docker logs openmetadata-migrate 2>&1 | tail -50 || true
+          docker logs openmetadata 2>&1 | tail -50 || true
+          exit 1
+
+      - name: Run streaming pipeline (reduced CI load)
+        run: |
+          docker compose exec -dT spark bash -lc \
+            "cd /opt/lakehouse && timeout 420 spark-submit src/jobs/04_stream_events.py --config metadata/pipeline_config.yaml || true"
+          sleep 90   # let the Structured Streaming query initialize
+          docker compose exec -T spark bash -lc \
+            "cd /opt/lakehouse && python scripts/produce_events.py --bootstrap kafka:29092 --rate 500 --duration 120"
+          sleep 90   # let the consumer drain and commit
+          docker compose exec -T spark bash -lc "pkill -f 04_stream_events || true"
+
+      - name: Run SCALE=small end-to-end experiments
+        run: |
+          docker compose exec -T spark bash -lc \
+            "cd /opt/lakehouse && SCALE=small bash scripts/run_all.sh" 2>&1 | tee run_small_log.txt
+          mkdir -p results
+          cp run_small_log.txt results/
+
+      - name: Collect service state
+        if: always()
+        run: |
+          mkdir -p results/service_logs
+          docker compose ps > results/service_logs/compose_ps.txt || true
+          for s in openmetadata spark trino hive-metastore debezium; do
+            docker logs "$s" 2>&1 | tail -200 > "results/service_logs/${s}.log" || true
+          done
+
+      - name: Upload experiment results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdl-eg-small-results
+          path: results/
+          if-no-files-found: warn
