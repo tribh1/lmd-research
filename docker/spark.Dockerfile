@@ -1,15 +1,20 @@
-# Spark image for the MDL-EG prototype: Python dependencies preinstalled and
-# Spark runtime packages pre-resolved, so `docker compose exec spark` can run
-# scripts/run_all.sh immediately without per-run pip installs or jar downloads.
-FROM bitnami/spark:3.5
+# Spark runtime for the MDL-EG prototype. Built on the official Python image
+# (bitnami/spark was withdrawn from Docker Hub in 2025): OpenJDK 17 + PySpark
+# from pip, Python dependencies preinstalled, and the Iceberg/Kafka/JDBC Spark
+# packages pre-resolved so `docker compose exec spark` can run
+# scripts/run_all.sh immediately with no per-run downloads.
+FROM python:3.10-slim-bookworm
 
-USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openjdk-17-jre-headless procps bash \
+    && rm -rf /var/lib/apt/lists/*
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt pyspark==3.5.1
 
-# Pre-resolve the Iceberg/Kafka/JDBC packages into a shared ivy cache; the
-# runtime session picks it up via SPARK_IVY_DIR (see src/common/spark_session.py).
+# Pre-resolve the runtime packages into a shared ivy cache; the session builder
+# picks it up via SPARK_IVY_DIR (see src/common/spark_session.py).
 ENV SPARK_IVY_DIR=/opt/ivy-cache
 RUN python - <<'PY' && chmod -R a+rX /opt/ivy-cache
 from pyspark.sql import SparkSession
@@ -26,4 +31,6 @@ spark = (SparkSession.builder.master("local[1]").appName("warm-ivy-cache")
 spark.stop()
 PY
 
-USER 1001
+WORKDIR /opt/lakehouse
+# The service is an execution host for spark-submit (local mode); keep it alive.
+CMD ["sleep", "infinity"]

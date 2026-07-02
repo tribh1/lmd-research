@@ -97,10 +97,8 @@ services:
     image: lakehouse-spark:3.5
     depends_on: [hive-metastore, minio, kafka]
     environment:
-      SPARK_MODE: master
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
-    ports: ["7077:7077", "8080:8080"]
     volumes:
       - ./:/opt/lakehouse
 
