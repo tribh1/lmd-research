@@ -41,7 +41,7 @@ services:
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
-      for b in lakehouse-raw lakehouse-work lakehouse-silver lakehouse-gold lakehouse-mart lakehouse-audit lakehouse-quarantine; do mc mb -p local/$$b || true; done;
+      for b in lakehouse-raw lakehouse-work lakehouse-silver lakehouse-gold lakehouse-mart lakehouse-audit lakehouse-quarantine lakehouse-baseline; do mc mb -p local/$$b || true; done;
       exit 0;"
 
   zookeeper:
@@ -108,7 +108,74 @@ services:
     volumes:
       - ./trino/catalog:/etc/trino/catalog
 
+  openmetadata-mysql:
+    image: docker.getcollate.io/openmetadata/db:1.4.8
+    container_name: openmetadata-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+    volumes:
+      - om_mysql:/var/lib/mysql
+    healthcheck:
+      test: mysql --user=root --password=$$MYSQL_ROOT_PASSWORD --silent --execute "use openmetadata_db"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  openmetadata-elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.10.2
+    container_name: openmetadata-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - om_es:/usr/share/elasticsearch/data
+    healthcheck:
+      test: curl -s http://localhost:9200/_cluster/health | grep -qE '"status":"(green|yellow)"'
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  openmetadata-migrate:
+    image: docker.getcollate.io/openmetadata/server:1.4.8
+    command: ["./bootstrap/openmetadata-ops.sh", "migrate"]
+    depends_on:
+      openmetadata-mysql:
+        condition: service_healthy
+      openmetadata-elasticsearch:
+        condition: service_healthy
+    environment: &om_env
+      DB_DRIVER_CLASS: com.mysql.cj.jdbc.Driver
+      DB_SCHEME: mysql
+      DB_PARAMS: allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC
+      DB_USER: openmetadata_user
+      DB_USER_PASSWORD: openmetadata_password
+      DB_HOST: openmetadata-mysql
+      DB_PORT: 3306
+      OM_DATABASE: openmetadata_db
+      ELASTICSEARCH_HOST: openmetadata-elasticsearch
+      ELASTICSEARCH_PORT: 9200
+      SEARCH_TYPE: elasticsearch
+      AUTHORIZER_ADMIN_PRINCIPALS: "[admin]"
+      AUTHENTICATION_PROVIDER: basic
+
+  openmetadata:
+    image: docker.getcollate.io/openmetadata/server:1.4.8
+    container_name: openmetadata
+    depends_on:
+      openmetadata-migrate:
+        condition: service_completed_successfully
+    ports: ["8585:8585"]
+    environment: *om_env
+    healthcheck:
+      test: wget -q --spider http://localhost:8586/healthcheck || exit 1
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
 volumes:
   pg_source:
   pg_hms:
   minio_data:
+  om_mysql:
+  om_es:

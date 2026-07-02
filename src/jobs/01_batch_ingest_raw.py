@@ -4,6 +4,7 @@ import argparse
 import time
 import uuid
 from pyspark.sql import functions as F
+from src.common.audit import record_lineage_event
 from src.common.config import load_config
 from src.common.spark_session import build_spark
 from src.common.governance import add_audit_columns
@@ -32,7 +33,12 @@ def write_iceberg(df, namespace: str, table_name: str, partition_col: str | None
     try:
         writer.create()
     except Exception:
-        df.writeTo(f"lakehouse.{namespace}.{table_name}").append()
+        # Non-destructive schema evolution (Experiment 5): merge new columns on append.
+        try:
+            spark.sql(f"ALTER TABLE lakehouse.{namespace}.{table_name} SET TBLPROPERTIES ('write.spark.accept-any-schema'='true')")
+        except Exception:
+            pass
+        df.writeTo(f"lakehouse.{namespace}.{table_name}").option("merge-schema", "true").append()
 
 
 def main():
@@ -55,6 +61,14 @@ def main():
     write_iceberg(df, "raw", args.table, tcfg.get("partition_column"))
     elapsed = time.time() - start
 
+    # Bytes written to the Iceberg table for this batch, from the files metadata
+    # table (thesis Section 2.7 requires MB/s in addition to rows/s).
+    try:
+        bytes_written = (spark.table(f"lakehouse.raw.{args.table}.files")
+                         .agg(F.sum("file_size_in_bytes")).collect()[0][0]) or 0
+    except Exception:
+        bytes_written = 0
+
     metrics = spark.createDataFrame([{
         "experiment": "E3",
         "table_name": args.table,
@@ -63,6 +77,8 @@ def main():
         "row_count": count,
         "elapsed_sec": elapsed,
         "rows_per_sec": count / elapsed if elapsed else None,
+        "bytes_written": int(bytes_written),
+        "mb_per_sec": bytes_written / 1024 / 1024 / elapsed if elapsed else None,
         "created_at": None,
     }]).withColumn("created_at", F.current_timestamp())
     spark.sql("CREATE NAMESPACE IF NOT EXISTS lakehouse.audit")
@@ -71,8 +87,12 @@ def main():
     except Exception:
         metrics.writeTo("lakehouse.audit.batch_metrics").append()
 
-    om.emit_lineage(tcfg["source_table"], f"lakehouse.raw.{args.table}", f"batch-ingest-{args.table}", batch_id)
-    print({"table": args.table, "rows": count, "elapsed_sec": elapsed, "rows_per_sec": count / elapsed if elapsed else None})
+    emitted = om.emit_lineage(tcfg["source_table"], f"lakehouse.raw.{args.table}", f"batch-ingest-{args.table}", batch_id)
+    record_lineage_event(spark, tcfg["source_table"], f"lakehouse.raw.{args.table}",
+                         f"batch-ingest-{args.table}", batch_id, emitted)
+    print({"table": args.table, "rows": count, "elapsed_sec": elapsed,
+           "rows_per_sec": count / elapsed if elapsed else None,
+           "mb_per_sec": bytes_written / 1024 / 1024 / elapsed if elapsed else None})
     spark.stop()
 
 

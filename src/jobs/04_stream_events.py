@@ -25,12 +25,16 @@ def main():
         .option("startingOffsets", "latest")
         .load())
 
+    # End-to-end latency (thesis Section 2.7): event creation time embedded by the
+    # producer (event_time) to processing visibility, at millisecond resolution.
+    # kafka_ts (broker receive time) is kept to decompose transport vs processing lag.
     events = kafka.select(
         F.from_json(F.col("value").cast("string"), EVENT_SCHEMA).alias("e"),
         F.col("timestamp").alias("kafka_ts")
     ).select("e.*", "kafka_ts") \
      .withColumn("_ingest_ts", F.current_timestamp()) \
-     .withColumn("_event_latency_ms", (F.unix_timestamp(F.current_timestamp()) - F.unix_timestamp(F.col("kafka_ts"))) * 1000) \
+     .withColumn("_event_latency_ms", F.unix_millis(F.col("_ingest_ts")) - F.unix_millis(F.col("event_time"))) \
+     .withColumn("_transport_latency_ms", F.unix_millis(F.col("kafka_ts")) - F.unix_millis(F.col("event_time"))) \
      .withColumn("_batch_id", F.lit(batch_id))
 
     spark.sql("CREATE NAMESPACE IF NOT EXISTS lakehouse.raw")

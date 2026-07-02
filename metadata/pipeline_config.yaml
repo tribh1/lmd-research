@@ -27,9 +27,20 @@ catalog_defaults:
 tables:
   customers:
     source_table: "public.src_customer"
+    description: "Customer master data ingested from the transactional source; PII masked at the Work-to-Silver boundary."
     primary_key: ["customer_id"]
     watermark_column: "updated_at"
     partition_column: "created_at"
+    columns:
+      - {name: "customer_id", dataType: "BIGINT"}
+      - {name: "full_name", dataType: "TEXT", pii: "PII.Name"}
+      - {name: "email", dataType: "TEXT", pii: "PII.Email"}
+      - {name: "telephone", dataType: "TEXT", pii: "PII.Phone"}
+      - {name: "address", dataType: "TEXT", pii: "PII.Address"}
+      - {name: "province", dataType: "TEXT"}
+      - {name: "created_at", dataType: "TIMESTAMP"}
+      - {name: "updated_at", dataType: "TIMESTAMP"}
+      - {name: "is_deleted", dataType: "BOOLEAN"}
     pii_columns:
       full_name: {method: "sha256"}
       email: {method: "email_mask"}
@@ -43,18 +54,37 @@ tables:
     glossary_terms: ["Customer", "PII", "Master Data"]
   products:
     source_table: "public.src_product"
+    description: "Product reference data including SKU, category, and pricing."
     primary_key: ["product_id"]
     watermark_column: "updated_at"
     partition_column: "updated_at"
+    columns:
+      - {name: "product_id", dataType: "BIGINT"}
+      - {name: "sku", dataType: "TEXT"}
+      - {name: "product_name", dataType: "TEXT"}
+      - {name: "category", dataType: "TEXT"}
+      - {name: "unit_price", dataType: "DECIMAL"}
+      - {name: "cost_price", dataType: "DECIMAL"}
+      - {name: "status", dataType: "TEXT"}
+      - {name: "updated_at", dataType: "TIMESTAMP"}
     dq_rules:
       - {rule_id: "PROD_SKU_NOT_NULL", column: "sku", type: "not_null", severity: "critical"}
       - {rule_id: "PROD_PRICE_POSITIVE", column: "unit_price", type: "positive", severity: "critical"}
     glossary_terms: ["Product", "Reference Data"]
   orders:
     source_table: "public.src_order"
+    description: "Sales order transactions partitioned by order date."
     primary_key: ["order_id"]
     watermark_column: "updated_at"
     partition_column: "order_date"
+    columns:
+      - {name: "order_id", dataType: "BIGINT"}
+      - {name: "customer_id", dataType: "BIGINT"}
+      - {name: "order_date", dataType: "TIMESTAMP"}
+      - {name: "order_status", dataType: "TEXT"}
+      - {name: "channel", dataType: "TEXT"}
+      - {name: "total_amount", dataType: "DECIMAL"}
+      - {name: "updated_at", dataType: "TIMESTAMP"}
     dq_rules:
       - {rule_id: "ORDER_CUSTOMER_NOT_NULL", column: "customer_id", type: "not_null", severity: "critical"}
       - {rule_id: "ORDER_AMOUNT_POSITIVE", column: "total_amount", type: "positive", severity: "critical"}
@@ -62,18 +92,37 @@ tables:
     glossary_terms: ["Order", "Sales Transaction"]
   order_items:
     source_table: "public.src_order_item"
+    description: "Order line items with quantity, discount, and line amount."
     primary_key: ["order_item_id"]
     watermark_column: "updated_at"
     partition_column: "updated_at"
+    columns:
+      - {name: "order_item_id", dataType: "BIGINT"}
+      - {name: "order_id", dataType: "BIGINT"}
+      - {name: "product_id", dataType: "BIGINT"}
+      - {name: "quantity", dataType: "INT"}
+      - {name: "unit_price", dataType: "DECIMAL"}
+      - {name: "discount_amount", dataType: "DECIMAL"}
+      - {name: "line_amount", dataType: "DECIMAL"}
+      - {name: "updated_at", dataType: "TIMESTAMP"}
     dq_rules:
       - {rule_id: "ITEM_QTY_POSITIVE", column: "quantity", type: "positive", severity: "critical"}
       - {rule_id: "ITEM_LINE_AMOUNT_POSITIVE", column: "line_amount", type: "positive", severity: "critical"}
     glossary_terms: ["Order Line", "Sales Transaction"]
   payments:
     source_table: "public.src_payment"
+    description: "Payment transactions; card numbers reduced to last-four representation per PCI-DSS."
     primary_key: ["payment_id"]
     watermark_column: "updated_at"
     partition_column: "paid_at"
+    columns:
+      - {name: "payment_id", dataType: "BIGINT"}
+      - {name: "order_id", dataType: "BIGINT"}
+      - {name: "payment_method", dataType: "TEXT"}
+      - {name: "card_number", dataType: "TEXT", pii: "PII.Financial"}
+      - {name: "amount", dataType: "DECIMAL"}
+      - {name: "paid_at", dataType: "TIMESTAMP"}
+      - {name: "updated_at", dataType: "TIMESTAMP"}
     pii_columns:
       card_number: {method: "last4"}
     dq_rules:
