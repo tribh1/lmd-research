@@ -87,10 +87,15 @@ pipeline jobs `src/jobs/01..05` plus the baseline/ablation jobs, **not** by the
 Kappa flow used in the CI smoke test. The end-to-end procedure is:
 
 ```bash
-docker compose up -d                     # includes OpenMetadata (http://localhost:8585)
-SCALE=1gb bash scripts/run_all.sh        # bootstrap catalog, load data, run pipelines,
-                                         # baseline, size verification, experiments E1–E5
+docker compose up -d --build             # includes OpenMetadata (http://localhost:8585);
+                                         # --build bakes Python deps + Spark jars into the spark image
+docker compose exec spark bash -lc \
+  "cd /opt/lakehouse && SCALE=1gb bash scripts/run_all.sh"
 ```
+
+`scripts/run_all.sh` auto-detects whether it runs inside the compose network or
+on the host and sets the connection endpoints (Postgres/Trino/OpenMetadata/
+Kafka/MinIO/HMS) accordingly, so the same command works in both modes.
 
 Key components:
 

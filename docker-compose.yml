@@ -91,7 +91,10 @@ services:
         -Dfs.s3a.path.style.access=true
 
   spark:
-    image: bitnami/spark:3.5
+    build:
+      context: .
+      dockerfile: docker/spark.Dockerfile
+    image: lakehouse-spark:3.5
     depends_on: [hive-metastore, minio, kafka]
     environment:
       SPARK_MODE: master

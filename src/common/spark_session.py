@@ -23,6 +23,13 @@ def build_spark(app_name: str) -> SparkSession:
         SparkSession.builder
         .appName(app_name)
         .config("spark.jars.packages", packages)
+    )
+    # Reuse the pre-resolved jar cache baked into the Docker image (docker/spark.Dockerfile).
+    ivy_dir = os.getenv("SPARK_IVY_DIR")
+    if ivy_dir:
+        builder = builder.config("spark.jars.ivy", ivy_dir)
+    builder = (
+        builder
         .config("spark.sql.extensions", "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
         .config(f"spark.sql.catalog.{catalog}", "org.apache.iceberg.spark.SparkCatalog")
         .config(f"spark.sql.catalog.{catalog}.type", catalog_type)

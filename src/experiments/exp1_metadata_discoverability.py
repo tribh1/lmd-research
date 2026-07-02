@@ -13,6 +13,7 @@ Table 4.5.
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from collections import defaultdict, deque
 from typing import Dict, List
@@ -106,7 +107,7 @@ def lineage_depth_yaml(cfg: Dict, target: str = "mart.sales_dashboard") -> int:
 def run(config_path: str, out: str | None = None) -> Dict:
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    om = MetadataClient(cfg["environment"]["openmetadata"]["url"])
+    om = MetadataClient(os.getenv("OPENMETADATA_URL", cfg["environment"]["openmetadata"]["url"]))
 
     if om.available():
         coverage = coverage_from_openmetadata(om)
